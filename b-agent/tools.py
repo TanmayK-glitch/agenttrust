@@ -1,5 +1,6 @@
 import jwt
 import os
+import math
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -8,34 +9,98 @@ def fake_gateway(token, tool, args):
     print(f"[Gateway] Checking permission for: {tool}")
 
     secret = os.getenv("AGENTTRUST_SECRET")
+    blocked = {
+        "decision": "BLOCK",
+    }
+
+    if not secret or not isinstance(token, str) or not isinstance(tool, str):
+        return {
+            **blocked,
+            "reason": "Invalid gateway input",
+        }
 
     try:
         credential = jwt.decode(
             token,
             secret,
-            algorithms=["HS256"]
+            algorithms=["HS256"],
+            options={"require": ["exp"]},
         )
-    except jwt.InvalidTokenError:
+    except (jwt.InvalidTokenError, TypeError, ValueError):
         return {
-            "decision": "BLOCK",
+            **blocked,
             "reason": "Invalid credential",
+        }
+
+    if not isinstance(credential, dict):
+        return {
+            **blocked,
+            "reason": "Invalid credential claims",
         }
 
     allowed_scopes = credential.get("scopes", [])
     max_amount = credential.get("max_amount", 0)
 
+    if (
+        not isinstance(allowed_scopes, list)
+        or not all(isinstance(scope, str) for scope in allowed_scopes)
+    ):
+        return {
+            **blocked,
+            "reason": "Invalid credential scopes",
+        }
+
     if tool not in allowed_scopes:
         return {
-            "decision": "BLOCK",
+            **blocked,
             "reason": f"Tool '{tool}' is not permitted",
         }
 
     if tool == "make_payment":
-        amount = args.get("amount", 0)
+        if not isinstance(args, dict):
+            return {
+                **blocked,
+                "reason": "Invalid payment arguments",
+            }
+
+        amount = args.get("amount")
+        recipient = args.get("recipient")
+
+        if (
+            isinstance(amount, bool)
+            or not isinstance(amount, (int, float))
+            or not math.isfinite(amount)
+        ):
+            return {
+                **blocked,
+                "reason": "Payment amount must be a finite number",
+            }
+
+        if amount <= 0:
+            return {
+                **blocked,
+                "reason": "Payment amount must be greater than zero",
+            }
+
+        if (
+            isinstance(max_amount, bool)
+            or not isinstance(max_amount, (int, float))
+            or not math.isfinite(max_amount)
+        ):
+            return {
+                **blocked,
+                "reason": "Invalid payment limit",
+            }
+
+        if not isinstance(recipient, str) or not recipient.strip():
+            return {
+                **blocked,
+                "reason": "Payment recipient is required",
+            }
 
         if amount > max_amount:
             return {
-                "decision": "BLOCK",
+                **blocked,
                 "reason": f"Payment exceeds limit of ₹{max_amount}",
             }
 
